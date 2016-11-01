@@ -20,8 +20,7 @@ pub struct ClipperConf {
     pub models: Vec<ModelConf>,
     pub use_lsh: bool,
     pub input_type: InputType,
-    // TODO training data
-    // pub training_data_file: Option<String>,
+    pub training_data_file: Option<String>,
     // TODO configurable output type
     //
     //
@@ -221,6 +220,8 @@ impl ClipperConf {
                 pc.get("name").unwrap().as_str().unwrap().to_string(),
                 influx_ip.clone(),
                 influx_port))),
+            training_data_file: pc.get("training_data_file")
+                                  .map(|s| s.as_str().unwrap().to_string()),
         };
         conf
     }
@@ -312,6 +313,7 @@ pub struct ClipperConfBuilder {
     pub redis_port: u16,
     pub influx_ip: String,
     pub influx_port: u16,
+    pub training_data_file: Option<String>,
 
     // Internal system settings
     pub num_predict_workers: usize,
@@ -336,6 +338,7 @@ impl ClipperConfBuilder {
             redis_port: 6379,
             influx_ip: "127.0.0.1".to_string(),
             influx_port: 8086,
+            training_data_file: None,
         }
     }
 
@@ -477,6 +480,7 @@ impl ClipperConfBuilder {
                 self.name.clone(),
                 self.influx_ip.clone(),
                 self.influx_port))),
+            training_data_file: self.training_data_file.clone(),
         }
     }
 }

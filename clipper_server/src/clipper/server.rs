@@ -7,6 +7,10 @@ use std::sync::{mpsc, RwLock, Arc};
 use std::collections::HashMap;
 use rand::{thread_rng, Rng};
 use std::cmp;
+use std::error::Error;
+use std::fs::{File};
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::thread::{self, JoinHandle};
 use std::time::Duration as StdDuration;
 
@@ -190,7 +194,7 @@ impl<P, S, D> ClipperServer<P, S, D>
                                                         conf.redis_port));
         }
 
-        ClipperServer {
+        let serv = ClipperServer {
             prediction_workers: prediction_workers,
             update_workers: update_workers,
             detection_workers: detection_workers,
@@ -198,7 +202,13 @@ impl<P, S, D> ClipperServer<P, S, D>
             metrics: conf.metrics,
             input_type: conf.input_type,
             models: models.clone(),
-        }
+        };
+        match conf.training_data_file {
+            Some(t) => serv.initialize_correction_policies(t.as_str()),
+            _ => (),
+        };
+
+        serv
     }
 
     // TODO: replace worker vec with spmc (http://seanmonstar.github.io/spmc/spmc/index.html)
@@ -236,6 +246,83 @@ impl<P, S, D> ClipperServer<P, S, D>
     //
     //     }
     // }
+
+    fn parse_update(&self, input_str: String) -> (u32, Update) {
+        let d: Vec<_> = input_str.trim().split(",").collect();
+        let uid = d[0].parse::<u32>().unwrap();
+        let output = d[1].parse::<f64>().unwrap() as Output;
+        let d2: Vec<_> = d[2].trim().split_whitespace().collect();
+        let input = match self.input_type {
+            InputType::Str => Input::Str {
+                s: d[2].to_string().trim().to_string(),
+            },
+            InputType::Byte(_) => {
+                let mut byte_vec = Vec::with_capacity(d2.len());
+                for b in d2 {
+                    byte_vec.push(b.parse::<u8>().unwrap());
+                }
+                Input::Bytes {
+                    b: byte_vec.clone(),
+                    length: byte_vec.len() as i32,
+                }
+            },
+            InputType::Integer(_) => {
+                let mut int_vec = Vec::with_capacity(d2.len());
+                for i in d2 {
+                    int_vec.push(i.parse::<i32>().unwrap());
+                }
+                Input::Ints {
+                    i: int_vec.clone(),
+                    length: int_vec.len() as i32,
+                }
+            },
+            InputType::Float(_) => {
+                let mut float_vec = Vec::with_capacity(d2.len());
+                for f in d2 {
+                    float_vec.push(f.parse::<f64>().unwrap());
+                }
+                Input::Floats {
+                    f: float_vec.clone(),
+                    length: float_vec.len() as i32,
+                }
+            }
+        };
+
+        println!("Init: ({}, {:?}, {})", uid, input.clone(), output.clone());
+        let update = Update {
+            query: input,
+            label: output,
+        };
+        (uid, update)
+    }
+
+    pub fn initialize_correction_policies(&self, training_data: &str) {
+        let path = Path::new(training_data);
+        let display = path.display();
+
+        let file = match File::open(&path) {
+            Err(why) => {
+                panic!(format!("couldn't open {}: REASON: {}",
+                               display,
+                               Error::description(&why)))
+            }
+            Ok(file) => BufReader::new(file)
+        };
+
+        let mut updates: HashMap<u32, Vec<Update>> = HashMap::new();
+        let lines = file.lines();
+        for line in lines {
+            let (uid, update) = self.parse_update(line.unwrap());
+            if !updates.contains_key(&uid) {
+                updates.insert(uid, Vec::new());
+            }
+            updates.get_mut(&uid).unwrap().push(update);
+        }
+
+        for (uid, update_vec) in updates {
+            self.schedule_update(UpdateRequest::new(uid, update_vec));
+        }
+    }
 }
 
 impl<P, S, D> Drop for ClipperServer<P, S, D>
