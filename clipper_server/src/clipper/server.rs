@@ -11,8 +11,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration as StdDuration;
 
 #[allow(unused_imports)]
-use cmt::{CorrectionModelTable, RedisCMT, UpdateTable, RedisUpdateTable, REDIS_CMT_DB,
-          REDIS_UPDATE_DB, DEFAULT_REDIS_SOCKET, REDIS_DEFAULT_PORT};
+use cmt::{CorrectionModelTable, RedisCMT, UpdateTable, RedisUpdateTable, InputTable,
+          RedisInputTable, REDIS_CMT_DB, REDIS_UPDATE_DB, REDIS_INPUT_DB,
+          DEFAULT_REDIS_SOCKET, REDIS_DEFAULT_PORT};
 use cache::{PredictionCache, SimplePredictionCache};
 use configuration::ClipperConf;
 use hashing::EqualityHasher;
@@ -312,6 +313,8 @@ impl<P, S> PredictionWorker<P, S>
         let epsilon = Duration::milliseconds(1);
         // let mut cmt = RedisCMT::new_socket_connection(DEFAULT_REDIS_SOCKET, REDIS_CMT_DB);
         let mut cmt = RedisCMT::new_tcp_connection(&redis_ip, redis_port, REDIS_CMT_DB);
+        let mut input_table = RedisInputTable::new_tcp_connection(&redis_ip, redis_port,
+                                                                  REDIS_INPUT_DB);
         info!("starting prediction worker {} with {} ms SLO",
               worker_id,
               slo_micros as f64 / 1000.0);
@@ -366,15 +369,16 @@ impl<P, S> PredictionWorker<P, S>
             }
 
             // use correction policy to make the final prediction
-            let prediction = P::predict(&correction_state, ys, missing_ys);
+            let prediction = P::predict(&correction_state, ys.clone(), missing_ys);
             // execute the user's callback on this thread
-            (req.on_predict)(prediction);
+            (req.on_predict)(prediction.clone());
             let end_time = PreciseTime::now();
             // TODO: metrics
             let latency = req.recv_time.to(end_time).num_microseconds().unwrap();
             // pred_metrics.latency_hist.insert(latency);
             // pred_metrics.thruput_meter.mark(1);
             // pred_metrics.pred_counter.incr(1);
+            input_table.add_input(req.uid, &req.query, &ys, &prediction).unwrap();
         }
         info!("ending loop: prediction worker {}", worker_id);
     }
@@ -845,12 +849,14 @@ impl<P, S, D> DetectionWorker<P, S, D>
            delay_seconds: u64,
            redis_ip: String,
            redis_port: u16) {
+        let input_table: RedisInputTable =
+            RedisInputTable::new_tcp_connection(&redis_ip, redis_port, REDIS_INPUT_DB);
         let update_table: RedisUpdateTable =
             RedisUpdateTable::new_tcp_connection(&redis_ip, redis_port, REDIS_UPDATE_DB);
         loop {
             // update_table.get_updates(0, -1);
             println!("Trying to retrain");
-            let (retrain, weights) = D::evaluate(&update_table);
+            let (retrain, weights) = D::evaluate(1234, &input_table, &update_table);
             if retrain {
                 println!("Pls retrain");
             } else {

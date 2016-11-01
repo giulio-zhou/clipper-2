@@ -11,12 +11,16 @@ use serde::de::Deserialize;
 use bincode;
 use std::error::Error;
 use redis::{self, Commands};
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::isize;
 use server::{Input, Output};
 
+pub type Preds = HashMap<String, Output>;
+
 pub const REDIS_CMT_DB: u32 = 1;
 pub const REDIS_UPDATE_DB: u32 = 2;
+pub const REDIS_INPUT_DB: u32 = 3;
 pub const REDIS_DEFAULT_PORT: u16 = 6379;
 // pub const REDIS_DEFAULT_PORT: u16 = 32775;
 pub const DEFAULT_REDIS_SOCKET: &'static str = "/tmp/redis.sock";
@@ -183,6 +187,72 @@ impl<S> CorrectionModelTable<S> for RedisCMT<S> where S: Serialize + Deserialize
         let stored_state: S = try!(bincode::serde::deserialize(&bytes)
                                        .map_err(|e| format!("{}", e.description())));
         Ok(stored_state)
+    }
+}
+
+pub trait InputTable {
+    fn get_inputs(&self, uid: u32, max_items: isize) -> Result<Vec<(Input, Preds, Output)>, String>;
+
+    fn add_input(&mut self, uid: u32, item: &Input, preds: &Preds, label: &Output) -> Result<(), String>;
+}
+
+pub struct RedisInputTable {
+    connection: redis::Connection,
+}
+
+impl RedisInputTable {
+    pub fn new_socket_connection(socket_file: &str, db: u32) -> RedisInputTable {
+        // let conn_string = format!("unix:///tmp/redis.sock?db={}", REDIS_UPDATE_DB);
+        let conn_string = format!("unix://{}?db={}", socket_file, db);
+        info!("RedisInputTable connection string {}", conn_string);
+        let client = redis::Client::open(conn_string.as_str()).unwrap();
+        let con = client.get_connection().unwrap();
+        RedisInputTable { connection: con }
+    }
+
+    pub fn new_tcp_connection(addr: &str, port: u16, db: u32) -> RedisInputTable {
+        // let conn_string = format!("redis://127.0.0.1/{}", REDIS_UPDATE_DB);
+        let conn_string = format!("redis://{}:{}/{}", addr, port, db);
+        info!("RedisInputTable connection string {}", conn_string);
+        let client = redis::Client::open(conn_string.as_str()).unwrap();
+        let con = client.get_connection().unwrap();
+        RedisInputTable { connection: con }
+    }
+}
+
+impl InputTable for RedisInputTable {
+    fn get_inputs(&self, uid: u32, max_items: isize) -> Result<Vec<(Input, Preds, Output)>, String> {
+        if max_items == 0 {
+            return Ok(Vec::new());
+        }
+
+        // NOTE: Redis LRANGE command is inclusive on both ends of the range
+        let low_idx = 0;
+        let high_idx = if max_items < 0 {
+            isize::MAX
+        } else {
+            max_items - 1
+        };
+        let bytes: Vec<Vec<u8>> = try!(self.connection
+                                           .lrange(uid, low_idx, high_idx)
+                                           .map_err(|e| format!("{}", e.description())));
+        let mut train_data: Vec<(Input, Preds, Output)> = Vec::with_capacity(bytes.len());
+        for b in bytes {
+            let example: (Input, Preds, Output) = try!(bincode::serde::deserialize(&b)
+                                                          .map_err(|e| format!("{}", e.description())));
+            train_data.push(example);
+        }
+        Ok(train_data)
+    }
+
+    fn add_input(&mut self, uid: u32, item: &Input, preds: &Preds, label: &Output) -> Result<(), String> {
+        println!("{:?} {:?} {:?}", item, preds, label);
+        let bytes = try!(bincode::serde::serialize(&(item, preds, label), bincode::SizeLimit::Infinite)
+                            .map_err(|e| format!("{}", e.description())));
+        let _: () = try!(self.connection
+                             .lpush(uid, bytes)
+                             .map_err(|e| format!("{}", e.description())));
+        Ok(())
     }
 }
 
