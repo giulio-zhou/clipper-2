@@ -22,6 +22,7 @@ use clipper::server::{Input, ClipperServer, InputType, PredictionRequest, Update
 use clipper::{metrics, configuration};
 use clipper::correction_policy::{CorrectionPolicy, DummyCorrectionPolicy,
                                  LogisticRegressionPolicy, LinearCorrectionState};
+use clipper::detection_policy::{DetectionPolicy, LogisticRegressionDetection};
 
 
 
@@ -33,11 +34,12 @@ const PREDICT: &'static str = "/predict";
 const UPDATE: &'static str = "/update";
 
 
-struct RequestHandler<P, S>
+struct RequestHandler<P, S, D>
     where P: CorrectionPolicy<S>,
-          S: Serialize + Deserialize
+          S: Serialize + Deserialize,
+          D: DetectionPolicy
 {
-    clipper: Arc<ClipperServer<P, S>>,
+    clipper: Arc<ClipperServer<P, S, D>>,
     result_string: String,
     result_channel: Option<mpsc::Receiver<String>>,
     // num_features: usize,
@@ -78,14 +80,15 @@ struct BytesInput {
 }
 
 
-impl<P, S> RequestHandler<P, S>
+impl<P, S, D> RequestHandler<P, S, D>
     where P: CorrectionPolicy<S>,
-          S: Serialize + Deserialize
+          S: Serialize + Deserialize,
+          D: DetectionPolicy
 {
-    fn new(clipper: Arc<ClipperServer<P, S>>,
+    fn new(clipper: Arc<ClipperServer<P, S, D>>,
            ctrl: Control,
            input_type: InputType)
-           -> RequestHandler<P, S> {
+           -> RequestHandler<P, S, D> {
         RequestHandler {
             clipper: clipper,
             result_string: "NO RESULT YET".to_string(),
@@ -284,9 +287,10 @@ fn decode_update_input(input_type: &InputType,
     }
 }
 
-impl<P, S> Handler<HttpStream> for RequestHandler<P, S>
+impl<P, S, D> Handler<HttpStream> for RequestHandler<P, S, D>
     where P: CorrectionPolicy<S>,
-          S: Serialize + Deserialize
+          S: Serialize + Deserialize,
+          D: DetectionPolicy
 {
     fn on_request(&mut self, req: Request<HttpStream>) -> Next {
 
@@ -427,9 +431,10 @@ fn launch_monitor_thread(metrics_register: Arc<RwLock<metrics::Registry>>,
 
 
 #[allow(unused_variables)]
-fn start_listening<P, S>(shutdown_signal: mpsc::Receiver<()>, clipper: Arc<ClipperServer<P, S>>)
+fn start_listening<P, S, D>(shutdown_signal: mpsc::Receiver<()>, clipper: Arc<ClipperServer<P, S, D>>)
     where P: CorrectionPolicy<S>,
-          S: Serialize + Deserialize
+          S: Serialize + Deserialize,
+          D: DetectionPolicy
 {
 
     let rest_server = Server::http(&"127.0.0.1:1337".parse().unwrap()).unwrap();
@@ -469,11 +474,13 @@ pub fn start(shutdown_signal: mpsc::Receiver<()>, conf_path: &String) {
 
     if config.policy_name == "hello world".to_string() {
         start_listening(shutdown_signal,
-                        Arc::new(ClipperServer::<DummyCorrectionPolicy, Vec<f64>>::new(config)));
+                        Arc::new(ClipperServer::<DummyCorrectionPolicy, Vec<f64>,
+                                                 LogisticRegressionDetection>::new(config)));
     } else if config.policy_name == "logistic_regression".to_string() {
         start_listening(shutdown_signal,
                         Arc::new(ClipperServer::<LogisticRegressionPolicy,
-                                                 LinearCorrectionState>::new(config)));
+                                                 LinearCorrectionState,
+                                                 LogisticRegressionDetection>::new(config)));
     } else {
         panic!("Unknown correction policy");
     }

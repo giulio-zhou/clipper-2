@@ -18,6 +18,7 @@ use configuration::ClipperConf;
 use hashing::EqualityHasher;
 use batching::{RpcPredictRequest, PredictionBatcher};
 use correction_policy::CorrectionPolicy;
+use detection_policy::DetectionPolicy;
 use metrics;
 
 // pub const SLO: i64 = 20;
@@ -105,12 +106,14 @@ impl UpdateRequest {
 }
 
 
-pub struct ClipperServer<P, S>
+pub struct ClipperServer<P, S, D>
     where P: CorrectionPolicy<S>,
-          S: Serialize + Deserialize
+          S: Serialize + Deserialize,
+          D: DetectionPolicy
 {
     prediction_workers: Vec<PredictionWorker<P, S>>,
     update_workers: Vec<UpdateWorker<P, S>>,
+    detection_workers: Vec<DetectionWorker<P, S, D>>,
     // model_names: Vec<String>,
     // TODO(#13): Change cache type signature to be a trait object once LSH
     // is implemented
@@ -121,11 +124,12 @@ pub struct ClipperServer<P, S>
 }
 
 
-impl<P, S> ClipperServer<P, S>
+impl<P, S, D> ClipperServer<P, S, D>
     where P: CorrectionPolicy<S>,
-          S: Serialize + Deserialize
+          S: Serialize + Deserialize,
+          D: DetectionPolicy
 {
-    pub fn new(conf: ClipperConf) -> ClipperServer<P, S> {
+    pub fn new(conf: ClipperConf) -> ClipperServer<P, S, D> {
 
         // Ensure configuration is valid
 
@@ -176,9 +180,19 @@ impl<P, S> ClipperServer<P, S>
                                                   conf.redis_ip.clone(),
                                                   conf.redis_port));
         }
+
+        let mut detection_workers = Vec::with_capacity(1);
+        for i in 0..1 {
+            detection_workers.push(DetectionWorker::new(i as i32,
+                                                        30 as u64,
+                                                        conf.redis_ip.clone(),
+                                                        conf.redis_port));
+        }
+
         ClipperServer {
             prediction_workers: prediction_workers,
             update_workers: update_workers,
+            detection_workers: detection_workers,
             // cache: cache,
             metrics: conf.metrics,
             input_type: conf.input_type,
@@ -223,13 +237,15 @@ impl<P, S> ClipperServer<P, S>
     // }
 }
 
-impl<P, S> Drop for ClipperServer<P, S>
+impl<P, S, D> Drop for ClipperServer<P, S, D>
     where P: CorrectionPolicy<S>,
-          S: Serialize + Deserialize
+          S: Serialize + Deserialize,
+          D: DetectionPolicy
 {
     fn drop(&mut self) {
         self.prediction_workers.clear();
         self.update_workers.clear();
+        self.detection_workers.clear();
         self.models.clear();
         info!("Dropping ClipperServer");
     }
@@ -781,5 +797,76 @@ impl UpdateDependencies {
             req: req,
             predictions: vec![HashMap::new(); num_updates],
         }
+    }
+}
+
+#[allow(dead_code)]
+struct DetectionWorker<P, S, D>
+    where P: CorrectionPolicy<S>,
+          S: Serialize + Deserialize,
+          D: DetectionPolicy
+{
+    worker_id: i32,
+    delay_seconds: u64,
+    _policy_marker: PhantomData<P>,
+    _state_marker: PhantomData<S>,
+    _detection_marker: PhantomData<D>,
+    runner_handle: Option<JoinHandle<()>>,
+}
+
+impl<P, S, D> DetectionWorker<P, S, D>
+    where P: CorrectionPolicy<S>,
+          S: Serialize + Deserialize,
+          D: DetectionPolicy
+{
+    pub fn new(worker_id: i32,
+               delay_seconds: u64,
+               redis_ip: String,
+               redis_port: u16)
+               -> DetectionWorker<P, S, D> {
+        let jh = thread::spawn(move || {
+            DetectionWorker::<P, S, D>::run(worker_id,
+                                            delay_seconds,
+                                            redis_ip,
+                                            redis_port);
+        });
+        DetectionWorker {
+            worker_id: worker_id,
+            delay_seconds: delay_seconds,
+            _policy_marker: PhantomData,
+            _state_marker: PhantomData,
+            _detection_marker: PhantomData,
+            runner_handle: Some(jh),
+        }
+    }
+
+    #[allow(unused_variables)]
+    fn run(worker_id: i32,
+           delay_seconds: u64,
+           redis_ip: String,
+           redis_port: u16) {
+        let update_table: RedisUpdateTable =
+            RedisUpdateTable::new_tcp_connection(&redis_ip, redis_port, REDIS_UPDATE_DB);
+        loop {
+            // update_table.get_updates(0, -1);
+            println!("Trying to retrain");
+            let (retrain, weights) = D::evaluate(&update_table);
+            if retrain {
+                println!("Pls retrain");
+            } else {
+                println!("No need to retrain");
+            }
+            thread::sleep(StdDuration::new(delay_seconds, 0));
+        }
+    }
+}
+
+impl<P, S, D> Drop for DetectionWorker<P, S, D>
+    where P: CorrectionPolicy<S>,
+          S: Serialize + Deserialize,
+          D: DetectionPolicy
+{
+    fn drop(&mut self) {
+        self.runner_handle.take().unwrap().join().unwrap();
     }
 }

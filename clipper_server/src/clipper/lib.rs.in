@@ -27,3 +27,4 @@ pub mod configuration;
 pub mod correction_policy;
 pub mod ml;
 pub mod tsdb;
+pub mod detection_policy;
