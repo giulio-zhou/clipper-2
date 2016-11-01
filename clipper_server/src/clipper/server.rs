@@ -465,7 +465,11 @@ impl<P, S> PredictionWorker<P, S>
             // pred_metrics.latency_hist.insert(latency);
             // pred_metrics.thruput_meter.mark(1);
             // pred_metrics.pred_counter.incr(1);
+            // TODO: Blocking and slow, should fix
             input_table.add_input(req.uid, &req.query, &ys, &prediction).unwrap();
+            // thread::spawn(move || {
+            //     input_table.add_input(req.uid, &req.query, &ys, &prediction).unwrap();
+            // });
         }
         info!("ending loop: prediction worker {}", worker_id);
     }

@@ -30,15 +30,6 @@ impl LogisticRegressionDetection {
         println!("Number of test inputs: {}", test_inputs.len());
         let mut logreg_inputs: Vec<Vec<f64>> = Vec::new();
         let mut labels: Vec<f64> = Vec::new();
-        for (input, _) in train_inputs {
-            let result: Vec<f64> = match input {
-                Input::Floats {ref f, length: _} => f.clone(),
-                _ => panic!("evaluate received a type other than Input::Floats!"),
-            };
-            logreg_inputs.push(result);
-            labels.push(0.0);
-        }
-
         for (input, _, _) in test_inputs {
             let result: Vec<f64> = match input {
                 Input::Floats {ref f, length: _} => f.clone(),
@@ -46,6 +37,14 @@ impl LogisticRegressionDetection {
             };
             logreg_inputs.push(result);
             labels.push(1.0);
+        }
+        for (input, _) in train_inputs {
+            let result: Vec<f64> = match input {
+                Input::Floats {ref f, length: _} => f.clone(),
+                _ => panic!("evaluate received a type other than Input::Floats!"),
+            };
+            logreg_inputs.push(result);
+            labels.push(0.0);
         }
 
         (logreg_inputs, labels)
@@ -91,14 +90,23 @@ impl DetectionPolicy for LogisticRegressionDetection {
         let prob = linear::Problem::from_training_data(&logreg_inputs, &labels);
         let model = linear::train_logistic_regression(prob, params);
         let mut probs: Vec<f64> = Vec::new();
+        let mut preds: Vec<f64> = Vec::new();
         for (input, label) in logreg_inputs.iter().zip(labels.iter()) {
             let res = model.logistic_regression_predict_proba(&input) - label;
             println!("x, conf, label: {:?}, {}, {}", input.clone(),
                      model.logistic_regression_predict_proba(&input), label);
             probs.push(res.powi(2));
+            if model.logistic_regression_predict(&input) == *label {
+                preds.push(1.0);
+            } else {
+                preds.push(0.0);
+            }
         }
         let mut sum: f64 = probs.iter().sum();
         sum /= probs.len() as f64;
+        let mut accuracy: f64 = preds.iter().sum();
+        accuracy /= preds.len() as f64;
+        println!("Accuracy: {}", accuracy);
         println!("Confidence: {}", sum.sqrt());
         // Set a hard threshold on prediction accuracy/confidence
         (sum.sqrt() < 0.4, probs)
