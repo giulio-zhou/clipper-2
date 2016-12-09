@@ -3,8 +3,8 @@ use std::net::TcpStream;
 use byteorder::{LittleEndian, WriteBytesExt, ReadBytesExt};
 use std::io::{Read, Write, Cursor};
 use std::mem;
-use server::{Input, Output, InputType};
-use batching::RpcPredictRequest;
+use server::{Input, Output, InputType, RetrainRequest};
+use batching::{RpcPredictRequest};
 use lz4::{EncoderBuilder, Decoder};
 use std::error::Error;
 
@@ -53,6 +53,7 @@ const VARINT_CODE: u8 = 4;
 const VARFLOAT_CODE: u8 = 5;
 const VARBYTE_CODE: u8 = 6;
 const STRING_CODE: u8 = 7;
+const FLOATRETRAIN_CODE: u8 = 8;
 
 pub fn send_batch(stream: &mut TcpStream,
                   inputs: &Vec<RpcPredictRequest>,
@@ -97,6 +98,35 @@ pub fn send_batch(stream: &mut TcpStream,
     responses
 }
 
+pub fn send_retrain_batch(stream: &mut TcpStream,
+                          inputs: &Vec<RetrainRequest>,
+                          input_type: &InputType)
+                          -> Vec<Output> {
+    assert!(inputs.len() > 0);
+    let message = match input_type {
+        &InputType::Float(l) => {
+            if l < 0 {
+                panic!("Input type must be fixed!")
+            } else {
+                encode_retrain_fixed_floats(inputs, l)
+            }
+        }
+        _ => panic!("Input type must be floats!"),
+    };
+    stream.write_all(&message[..]).unwrap();
+    stream.flush().unwrap();
+
+    let num_response_bytes = inputs.len() * mem::size_of::<Output>();
+    let mut response_buffer: Vec<u8> = vec![0; num_response_bytes];
+    stream.read_exact(&mut response_buffer).unwrap();
+    let mut cursor = Cursor::new(response_buffer);
+    let mut responses: Vec<Output> = Vec::with_capacity(inputs.len());
+    for i in 0..inputs.len() {
+        responses.push(cursor.read_f64::<LittleEndian>().unwrap());
+    }
+    responses
+}
+
 pub fn shutdown(stream: &mut TcpStream) -> bool {
     let mut message = Vec::new();
     message.push(SHUTDOWN_CODE);
@@ -109,6 +139,32 @@ pub fn shutdown(stream: &mut TcpStream) -> bool {
     let response = cursor.read_u32::<LittleEndian>().unwrap();
     // info!("SHUTDOWN RESPONSE: {}", response);
     response == 1234_u32
+}
+
+pub fn encode_retrain_fixed_floats(inputs: &Vec<RetrainRequest>,
+                                   length: i32) -> Vec<u8> {
+    let mut message = Vec::new();
+    message.push(FLOATRETRAIN_CODE);
+    message.write_u32::<LittleEndian>(inputs[0].reweighted_data.len() as u32).unwrap();
+    message.write_u32::<LittleEndian>((length + 2) as u32).unwrap();
+    println!("data len: {}, datapoint len: {}, inputs len: {}", inputs[0].reweighted_data.len(), length + 2, inputs.len());
+    assert!(message.len() == 9);
+    // let floatsize = mem::size_of::<f64>;
+    for r in inputs {
+        for x in r.reweighted_data.clone() {
+            match x.query {
+                Input::Floats {ref f, length: _} => {
+                    for xi in f.iter() {
+                        message.write_f64::<LittleEndian>(*xi).unwrap();
+                    }
+                }
+                _ => unreachable!(),
+            }
+            message.write_f64::<LittleEndian>(x.label).unwrap();
+            message.write_f64::<LittleEndian>(x.weight).unwrap();
+        }
+    }
+    message
 }
 
 pub fn encode_var_ints(inputs: &Vec<RpcPredictRequest>) -> Vec<u8> {

@@ -21,7 +21,7 @@ use cmt::{CorrectionModelTable, RedisCMT, UpdateTable, RedisUpdateTable, InputTa
 use cache::{PredictionCache, SimplePredictionCache};
 use configuration::ClipperConf;
 use hashing::EqualityHasher;
-use batching::{RpcPredictRequest, PredictionBatcher};
+use batching::{RpcPredictRequest, PredictionBatcher, RetrainBatcher};
 use correction_policy::CorrectionPolicy;
 use detection_policy::DetectionPolicy;
 use metrics;
@@ -110,6 +110,29 @@ impl UpdateRequest {
     }
 }
 
+#[derive(Clone)]
+pub struct RetrainTuple {
+    pub query: Input,
+    pub label: Output,
+    pub weight: f64,
+}
+
+#[allow(dead_code)]
+pub struct RetrainRequest {
+    pub recv_time: PreciseTime,
+    pub reweighted_data: Vec<RetrainTuple>, /* query: Input,
+                                             * label: Output,
+                                             * weight: f64 */
+}
+
+impl RetrainRequest {
+    pub fn new(reweighted_data: Vec<RetrainTuple>) -> RetrainRequest {
+        RetrainRequest {
+            recv_time: PreciseTime::now(),
+            reweighted_data: reweighted_data,
+        }
+    }
+}
 
 pub struct ClipperServer<P, S, D>
     where P: CorrectionPolicy<S>,
@@ -151,6 +174,7 @@ impl<P, S, D> ClipperServer<P, S, D>
             Arc::new(SimplePredictionCache::new(&conf.models, conf.cache_size.clone()));
 
         let mut model_batchers = HashMap::new();
+        let mut retrain_batchers = HashMap::new();
         for m in conf.models.into_iter() {
             let b = PredictionBatcher::new(m.name.clone(),
                                            m.addresses.clone(),
@@ -159,6 +183,11 @@ impl<P, S, D> ClipperServer<P, S, D>
                                            cache.clone(),
                                            conf.slo_micros.clone());
             model_batchers.insert(m.name.clone(), b);
+
+            let rb = RetrainBatcher::new(m.name.clone(),
+                                         m.addresses.clone(),
+                                         conf.input_type.clone());
+            retrain_batchers.insert(m.name.clone(), rb);
         }
 
         // let models = Arc::new(model_batchers);
@@ -189,7 +218,8 @@ impl<P, S, D> ClipperServer<P, S, D>
         let mut detection_workers = Vec::with_capacity(1);
         for i in 0..1 {
             detection_workers.push(DetectionWorker::new(i as i32,
-                                                        30 as u64,
+                                                        30 as u64, // 30 second delay
+                                                        retrain_batchers.clone(),
                                                         conf.redis_ip.clone(),
                                                         conf.redis_port));
         }
@@ -916,12 +946,14 @@ impl<P, S, D> DetectionWorker<P, S, D>
 {
     pub fn new(worker_id: i32,
                delay_seconds: u64,
+               retrain_batchers: HashMap<String, RetrainBatcher>,
                redis_ip: String,
                redis_port: u16)
                -> DetectionWorker<P, S, D> {
         let jh = thread::spawn(move || {
             DetectionWorker::<P, S, D>::run(worker_id,
                                             delay_seconds,
+                                            retrain_batchers,
                                             redis_ip,
                                             redis_port);
         });
@@ -938,6 +970,7 @@ impl<P, S, D> DetectionWorker<P, S, D>
     #[allow(unused_variables)]
     fn run(worker_id: i32,
            delay_seconds: u64,
+           retrain_batchers: HashMap<String, RetrainBatcher>,
            redis_ip: String,
            redis_port: u16) {
         let input_table: RedisInputTable =
@@ -945,15 +978,19 @@ impl<P, S, D> DetectionWorker<P, S, D>
         let update_table: RedisUpdateTable =
             RedisUpdateTable::new_tcp_connection(&redis_ip, redis_port, REDIS_UPDATE_DB);
         loop {
+            thread::sleep(StdDuration::new(delay_seconds, 0));
             // update_table.get_updates(0, -1);
             println!("Trying to retrain");
-            let (retrain, weights) = D::evaluate(1234, &input_table, &update_table);
+            let (retrain, reweighted_train) = D::evaluate(1234, &input_table, &update_table);
             if retrain {
                 println!("Pls retrain");
+                for (model_name, batcher) in &retrain_batchers {
+                    let r = RetrainRequest::new(reweighted_train.clone());
+                    batcher.request_retraining(r);
+                }
             } else {
                 println!("No need to retrain");
             }
-            thread::sleep(StdDuration::new(delay_seconds, 0));
         }
     }
 }

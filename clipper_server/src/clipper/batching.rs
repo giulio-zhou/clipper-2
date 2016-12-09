@@ -5,7 +5,7 @@ use std::thread::{self, JoinHandle};
 use std::sync::{RwLock, Arc, mpsc, Mutex};
 use std::cmp;
 use rand::{thread_rng, Rng};
-use server::{self, InputType, Output};
+use server::{self, InputType, Output, RetrainRequest};
 use metrics;
 use rpc;
 use cache::PredictionCache;
@@ -199,10 +199,6 @@ impl<C> PredictionBatcher<C> where C: PredictionCache<Output> + 'static + Send +
 }
 
 
-
-
-
-
 fn update_batch_size_aimd(cur_batch: usize, cur_time_micros: u64, max_time_micros: u64) -> usize {
     let batch_increment = 2;
     let backoff = 0.9;
@@ -224,6 +220,103 @@ fn update_batch_size_aimd(cur_batch: usize, cur_time_micros: u64, max_time_micro
 pub fn random_features(d: usize) -> Vec<f64> {
     let mut rng = thread_rng();
     rng.gen_iter::<f64>().take(d).collect::<Vec<f64>>()
+}
+
+
+/* Relevant components for model retraining */
+// #[derive(Clone)]
+// pub struct RpcRetrainRequest {
+//     pub input: server::Input,
+//     pub output: server::Output,
+//     pub weight: f64,
+//     pub recv_time: time::PreciseTime,
+// }
+
+pub struct RetrainBatcher {
+    name: String,
+    input_queues: Vec<mpsc::Sender<RetrainRequest>>,
+    join_handles: Option<Arc<Mutex<Vec<Option<JoinHandle<()>>>>>>,
+}
+
+#[allow(dead_code)]
+impl RetrainBatcher {
+    pub fn new(name: String,
+               addrs: Vec<SocketAddr>,
+               input_type: InputType) -> RetrainBatcher {
+        let mut input_queues = Vec::with_capacity(addrs.len());
+        let mut join_handles = Vec::with_capacity(addrs.len());
+        for a in addrs.iter() {
+            let (sender, receiver) = mpsc::channel::<RetrainRequest>();
+            input_queues.push(sender);
+            let name = name.clone();
+            let addr = a.clone();
+            let input_type = input_type.clone();
+            let jh = thread::spawn(move || {
+                RetrainBatcher::run(name,
+                                    receiver,
+                                    addr,
+                                    input_type);
+            });
+            join_handles.push(Some(jh));
+        }
+        RetrainBatcher {
+            name: name,
+            input_queues: input_queues,
+            join_handles: Some(Arc::new(Mutex::new(join_handles))),
+        }
+    }
+
+    #[allow(unused_variables)]
+    fn run(name: String,
+           receiver: mpsc::Receiver<RetrainRequest>,
+           addr: SocketAddr,
+           input_type: InputType) {
+        let mut stream: TcpStream = TcpStream::connect(addr).unwrap();
+        stream.set_nodelay(true).unwrap();
+        stream.set_read_timeout(None).unwrap();
+
+        let cur_batch_size = 1;
+
+        while let Ok(first_req) = receiver.recv() {
+            let mut batch: Vec<RetrainRequest> = Vec::new();
+            batch.push(first_req);
+            let start_time = time::PreciseTime::now();
+
+            while batch.len() < cur_batch_size {
+                if let Ok(req) = receiver.try_recv() {
+                    batch.push(req);
+                } else {
+                    break;
+                }
+            }
+
+            let response_floats: Vec<f64> = rpc::send_retrain_batch(&mut stream, &batch, &input_type);
+            let end_time = time::PreciseTime::now();
+        }
+
+        if !rpc::shutdown(&mut stream) {
+            warn!("Connection to model: {} did not shut down cleanly", name);
+        }
+    }
+
+    pub fn request_retraining(&self, req: RetrainRequest) {
+        // TODO: this could be optimized with
+        // https://doc.rust-lang.org/rand/rand/distributions/range/struct.Range.html
+        let mut rng = thread_rng();
+        let replica: usize = rng.gen_range(0, self.input_queues.len());
+        self.input_queues[replica].send(req).unwrap();
+    }
+}
+
+impl Clone for RetrainBatcher
+{
+    fn clone(&self) -> RetrainBatcher {
+        RetrainBatcher {
+            name: self.name.clone(),
+            input_queues: self.input_queues.clone(),
+            join_handles: self.join_handles.clone(),
+        }
+    }
 }
 
 

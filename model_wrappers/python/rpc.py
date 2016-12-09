@@ -18,6 +18,7 @@ VARINT_CODE = 4
 VARFLOAT_CODE = 5
 VARBYTE_CODE = 6
 STRING_CODE = 7
+RETRAIN_CODE = 8
 
 
 # class NoopModelWrapper(ModelWrapperBase):
@@ -53,6 +54,9 @@ def is_fixed_format(fmt):
 
 def is_var_format(fmt):
     return fmt == VARINT_CODE or fmt == VARFLOAT_CODE or fmt == VARBYTE_CODE
+
+def is_retrain_format(fmt):
+    return fmt == RETRAIN_CODE
 
 class ClipperRpc(SocketServer.BaseRequestHandler):
 
@@ -174,6 +178,22 @@ class ClipperRpc(SocketServer.BaseRequestHandler):
                     decompressed_strs = decompressed_strs[length:]
                 for i in range(0, len(inputs)):
                     assert len(inputs[i]) == input_lengths[i]
+            elif is_retrain_format(input_type):
+                additional_header_bytes = 4
+                while len(data) < additional_header_bytes:
+                    data += self.request.recv(4096)
+                input_len = struct.unpack("<I", data[:additional_header_bytes])[0]
+                data = data[additional_header_bytes:]
+                inputs = []
+
+                total_bytes_expected = 8*input_len*num_inputs
+                while len(data) < total_bytes_expected:
+                    data += self.request.recv(4096)
+                print(input_type, len(data), input_len, num_inputs)
+                input_doubles = np.array(array.array('d', bytes(data)))
+                inputs = np.split(input_doubles, num_inputs)
+                for i in inputs:
+                    assert len(i) == input_len
             else:
                 raise RuntimeError("Invalid input type: " + input)
 
@@ -183,17 +203,31 @@ class ClipperRpc(SocketServer.BaseRequestHandler):
                 predictions = self.server.model.predict_floats(inputs)
             elif input_type == FIXEDBYTE_CODE or input_type == VARBYTE_CODE:
                 predictions = self.server.model.predict_bytes(inputs)
-            else:
+            elif input_type == STRING_CODE:
                 predictions = self.server.model.predict_strings(inputs)
+            else:
+                inputs = np.array(inputs)
+                nan_idx = np.where(np.isnan(inputs))
+                print(inputs[nan_idx[0]])
+                inputs = np.nan_to_num(inputs)
+                # Separate into three parts
+                outputs = inputs[:, -2]
+                weights = inputs[:, -1]
+                inputs = inputs[:, :-2]
+                self.server.model.retrain(inputs, outputs, weights)
+                predictions = np.ones(len(inputs))
             assert len(predictions) == num_inputs
             assert predictions.dtype == np.dtype('float64')
             self.request.sendall(predictions.tobytes())
 
+class ThreadedTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
+    pass
 
 
 
 def start(model_wrapper, ip, port):
-    server = SocketServer.TCPServer((ip, port), ClipperRpc)
+    # server = SocketServer.TCPServer((ip, port), ClipperRpc)
+    server = ThreadedTCPServer((ip, port), ClipperRpc)
     server.model = model_wrapper
     # server.handle_request()
     print("Starting to serve")
