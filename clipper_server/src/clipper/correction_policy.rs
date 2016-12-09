@@ -175,7 +175,12 @@ impl CorrectionPolicy<Vec<f64>> for DummyCorrectionPolicy {
                predictions: HashMap<String, Output>,
                missing_predictions: Vec<String>)
                -> Output {
-        predictions.len() as Output
+        if predictions.contains_key("m1") {
+            predictions["m1"]
+        } else {
+            0.0
+        }
+        // predictions.len() as Output
     }
 
     #[allow(dead_code, unused_variables)]

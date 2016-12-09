@@ -212,7 +212,11 @@ impl LogisticRegressionModel {
     }
 
     pub fn logistic_regression_predict_proba(&self, x: &Vec<f64>) -> f64 {
-        let dot = linalg::dot(&self.w, x);
+        let mut dot = linalg::dot(&self.w, x);
+        let (_, neg) = self.get_labels();
+        if neg == 1.0 {
+            dot = -dot;
+        }
         // prevent overflow
         if -dot > 1e3 {
             0.0
@@ -221,7 +225,17 @@ impl LogisticRegressionModel {
         }
     }
 
+    pub fn logistic_regression_reweighting(&self, x: &Vec<f64>) -> f64 {
+        let mut dot = linalg::dot(&self.w, x);
+        let (_, neg) = self.get_labels();
+        if neg == 1.0 {
+            dot = -dot;
+        }
+        dot.exp()
+    }
+
     pub fn get_labels(&self) -> (f64, f64) {
+        // (1.0, 0.0)
         let l = self.label.as_ref().unwrap();
         if l.len() == 1 {
             if l[0] == 1 {
