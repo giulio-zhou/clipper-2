@@ -8,7 +8,7 @@
 #include <boost/property_tree/ptree.hpp>
 
 #include <clipper/datatypes.hpp>
-#include <frontends/admin_rest.hpp>
+#include "admin_rest.hpp"
 
 #include <server_http.hpp>
 

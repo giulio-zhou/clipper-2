@@ -23,6 +23,13 @@ add_executable(rpcbench src/rpc_service_bench.cpp)
 target_link_libraries(rpcbench clipper)
 
 ##################################
+# Management API executable
+
+add_executable(management_api src/management_api.cpp)
+
+target_link_libraries(management_api clipper boost httpserver)
+
+##################################
 # Create library for frontends
 
 # add_library(frontends
