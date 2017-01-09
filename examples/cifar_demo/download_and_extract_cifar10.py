@@ -55,7 +55,7 @@ print("Writing out to CSV...")
 with open('data/train.data', 'w') as outfile:
     for i in range(len(data)):
         img = data[i].reshape(3, 32, 32)
-        img = np.transpose(img, (2, 0, 1))
+        img = np.transpose(img, (1, 2, 0))
         example_data = [labels[i]] + img.flatten().tolist()
         example_data = map(lambda x: str(x), example_data)
         output_line = ','.join(example_data) + '\n'
@@ -63,7 +63,7 @@ with open('data/train.data', 'w') as outfile:
 with open('data/test.data', 'w') as outfile:
     for i in range(len(test_data)):
         img = test_data[i].reshape(3, 32, 32)
-        img = np.transpose(img, (2, 0, 1))
+        img = np.transpose(img, (1, 2, 0))
         example_data = [test_labels[i]] + img.flatten().tolist()
         example_data = map(lambda x: str(x), example_data)
         output_line = ','.join(example_data) + '\n'
