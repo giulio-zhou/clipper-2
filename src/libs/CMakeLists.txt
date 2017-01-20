@@ -41,3 +41,5 @@ export(TARGETS cxxopts FILE CxxOptsConfig.cmake)
 
 
 add_subdirectory(redox)
+
+add_subdirectory(rapidjson)
